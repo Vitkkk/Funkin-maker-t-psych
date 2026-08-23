@@ -1,0 +1,124 @@
+ion.optString("type"))) continue;
+                JSONObject props = action.optJSONObject("props");
+                if (props == null) continue;
+                int oid = nInt(props.opt("object"), -1);
+                String spr = props.optString("sprite", "");
+                if (oid == playerObject && sprites.containsKey(spr)) playerAssets.add(spr);
+                if (oid == opponentObject && sprites.containsKey(spr)) opponentAssets.add(spr);
+            }
+        }
+
+        Set<String> charAssets = new LinkedHashSet<>();
+        charAssets.addAll(playerAssets);
+        charAssets.addAll(opponentAssets);
+        Map<String, Boolean> charIsPlayer = new HashMap<>();
+        for (String s : opponentAssets) charIsPlayer.put(s, false);
+        for (String s : playerAssets) charIsPlayer.put(s, true);
+
+        JSONArray iconNames = scene.optJSONArray("icons");
+        Map<Boolean, String> roleIcon = new HashMap<>();
+        roleIcon.put(true, "fmm-player");
+        roleIcon.put(false, "fmm-opponent");
+        Set<Boolean> generatedRoleIcons = new HashSet<>();
+        if (iconNames != null) {
+            if (iconNames.length() > 0 && sprites.containsKey(iconNames.optString(0))) {
+                File dest = new File(modDir, "images/icons/fmm-player.png");
+                buildIcon(sprites.get(iconNames.optString(0)), dest);
+                generatedRoleIcons.add(true);
+            }
+            if (iconNames.length() > 1 && sprites.containsKey(iconNames.optString(1))) {
+                File dest = new File(modDir, "images/icons/fmm-opponent.png");
+                buildIcon(sprites.get(iconNames.optString(1)), dest);
+                generatedRoleIcons.add(false);
+            }
+        }
+
+        int charIndex = 0;
+        for (String name : charAssets) {
+            if (!sprites.containsKey(name)) continue;
+            int p = 12 + (int) Math.round((charIndex / (double) Math.max(1, charAssets.size())) * 32.0);
+            notifyProgress(progress, p, "Convertendo personagem " + name + "…");
+            boolean isPlayer = Boolean.TRUE.equals(charIsPlayer.get(name));
+            JSONObject roleObject = objects.getJSONObject(isPlayer ? playerObject : opponentObject);
+            convertCharacter(sprites.get(name), name, assetIds.get(name), isPlayer, roleObject,
+                    generatedRoleIcons.contains(isPlayer), roleIcon.get(isPlayer), modDir);
+            charIndex++;
+        }
+
+        notifyProgress(progress, 47, "Montando atlases do cenário…");
+        Set<String> stageAssets = new LinkedHashSet<>();
+        for (int i = 0; i < objects.length(); i++) {
+            if (i == playerObject || i == opponentObject) continue;
+            JSONObject obj = objects.optJSONObject(i);
+            if (obj == null) continue;
+            String spr = obj.optString("spr", "");
+            if (sprites.containsKey(spr)) stageAssets.add(spr);
+        }
+        for (int bi = 0; bi < eventBlocks.length(); bi++) {
+            JSONObject block = eventBlocks.optJSONObject(bi);
+            if (block == null) continue;
+            JSONArray actions = block.optJSONArray("actions");
+            if (actions == null) continue;
+            for (int ai = 0; ai < actions.length(); ai++) {
+                JSONObject action = actions.optJSONObject(ai);
+                if (action == null || !"ObjectSpriteSet".equals(action.optString("type"))) continue;
+                JSONObject props = action.optJSONObject("props");
+                if (props == null) continue;
+                String spr = props.optString("sprite", "");
+                int oid = nInt(props.opt("object"), -1);
+                if (oid != playerObject && oid != opponentObject && sprites.containsKey(spr)) stageAssets.add(spr);
+            }
+        }
+        int stageIndex = 0;
+        for (String name : stageAssets) {
+            int p = 48 + (int) Math.round((stageIndex / (double) Math.max(1, stageAssets.size())) * 18.0);
+            notifyProgress(progress, p, "Convertendo cenário " + name + "…");
+            SpriteData sp = sprites.get(name);
+            List<String> prefixes = new ArrayList<>();
+            for (SpriteEntryData e : sp.entries) prefixes.add("anim" + e.index);
+            File base = new File(modDir, "images/" + modId + "/stage/" + assetIds.get(name));
+            makeAtlas(sp, base, prefixes);
+            stageIndex++;
+        }
+
+        notifyProgress(progress, 68, "Criando stage e câmera…");
+        JSONObject stageJson = buildLegacyStageJson(objects, cameras, playerObject, opponentObject);
+        writeJson(new File(modDir, "stages/" + stageId + ".json"), stageJson);
+        String stageLua = buildLegacyStageLua(fnmm.getName(), modId, objects, cameras, sprites, assetIds,
+                playerObject, opponentObject);
+        writeText(new File(modDir, "stages/" + stageId + ".lua"), stageLua);
+
+        notifyProgress(progress, 76, "Convertendo chart e eventos…");
+        ChartResult chart = buildLegacyChart(data, eventBlocks, sprites, assetIds, playerObject, opponentObject,
+                initialPlayerSprite, initialOpponentSprite, displaySong, songId, stageId);
+        writeJson(new File(modDir, "data/" + songId + "/" + songId + ".json"), chart.root);
+
+        notifyProgress(progress, 84, "Copiando áudio sem recompressão…");
+        File songDir = new File(modDir, "songs/" + songId);
+        mkdirs(songDir);
+        copyFile(musicFile, new File(songDir, "Inst.ogg"));
+        File voices = findFirstExisting(extracted, "voices.ogg", "Voices.ogg", "vocals.ogg", "Vocals.ogg");
+        if (voices != null) copyFile(voices, new File(songDir, "Voices.ogg"));
+        chart.song.put("needsVoices", voices != null);
+        writeJson(new File(modDir, "data/" + songId + "/" + songId + ".json"), chart.root);
+
+        notifyProgress(progress, 88, "Criando entrada de Freeplay…");
+        String opponentCharId = "fmm-" + assetIds.get(initialOpponentSprite);
+        String playerCharId = "fmm-" + assetIds.get(initialPlayerSprite);
+        String weekIcon = generatedRoleIcons.contains(false) ? "fmm-opponent" : "face";
+        writePackAndWeek(modDir, displaySong, songId, opponentCharId, playerCharId, weekIcon);
+
+        JSONObject validation = new JSONObject();
+        validation.put("target", "Psych Engine Android / legacy pre-1.0 chart loader (0.7.x-compatible; accepted by 1.x)");
+        validation.put("source_version", data.opt("version"));
+        validation.put("notes", chart.noteCount);
+        validation.put("sustains", chart.sustainCount);
+        validation.put("event_blocks", chart.eventBlocks);
+        validation.put("event_actions", chart.eventActions);
+        validation.put("characters", charAssets.size());
+        validation.put("stage_sprites", stageAssets.size());
+        validation.put("audio_copied_without_reencode", true);
+        validation.put("legacy_chart_wrapper", true);
+        validation.put("legacy_lane_remap", true);
+        validation.put("stage_objects_generated_in_lua", true);
+      
