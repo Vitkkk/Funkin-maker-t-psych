@@ -1,0 +1,167 @@
+255));
+        int g = clamp255(nInt(color.opt("g"), 255));
+        int b = clamp255(nInt(color.opt("b"), 255));
+        return String.format(Locale.US, "%02X%02X%02X", r, g, b);
+    }
+
+    private static int clamp255(int v) { return Math.max(0, Math.min(255, v)); }
+
+    private static String escapePipeValue(String s) {
+        if (s == null) return "";
+        return s.replace("|", "%7C").replace("=", "%3D");
+    }
+
+    private static String boolString(boolean b) { return b ? "true" : "false"; }
+
+    private static double nDouble(Object v, double def) {
+        if (v == null || v == JSONObject.NULL) return def;
+        try {
+            if (v instanceof Number) return ((Number) v).doubleValue();
+            return Double.parseDouble(String.valueOf(v));
+        } catch (Exception e) { return def; }
+    }
+
+    private static int nInt(Object v, int def) {
+        return (int) Math.round(nDouble(v, def));
+    }
+
+    private static boolean nBool(Object v, boolean def) {
+        if (v == null || v == JSONObject.NULL) return def;
+        if (v instanceof Boolean) return (Boolean) v;
+        if (v instanceof Number) return ((Number) v).doubleValue() != 0;
+        String s = String.valueOf(v).trim();
+        if ("true".equalsIgnoreCase(s) || "1".equals(s)) return true;
+        if ("false".equalsIgnoreCase(s) || "0".equals(s)) return false;
+        return def;
+    }
+
+    private static String fmt(double v) {
+        if (Math.abs(v - Math.rint(v)) < 1e-12) return String.format(Locale.US, "%.0f", v);
+        String s = String.format(Locale.US, "%.12f", v);
+        while (s.contains(".") && s.endsWith("0")) s = s.substring(0, s.length() - 1);
+        if (s.endsWith(".")) s = s.substring(0, s.length() - 1);
+        return s;
+    }
+
+    private static String slug(String s) {
+        String x = s == null ? "" : s.trim().toLowerCase(Locale.US).replace('_', '-');
+        x = x.replaceAll("[^a-z0-9-]+", "-").replaceAll("-+", "-");
+        x = trimDashes(x);
+        return x.isEmpty() ? "converted-song" : x;
+    }
+
+    private static String assetSlug(String s) {
+        String x = s == null ? "" : s.trim().toLowerCase(Locale.US).replace(' ', '-');
+        x = x.replaceAll("[^a-z0-9_-]+", "-").replaceAll("-+", "-");
+        x = trimDashes(x);
+        return x.isEmpty() ? "asset" : x;
+    }
+
+    private static String trimDashes(String s) {
+        int a = 0, b = s.length();
+        while (a < b && s.charAt(a) == '-') a++;
+        while (b > a && s.charAt(b - 1) == '-') b--;
+        return s.substring(a, b);
+    }
+
+    private static String stripExtension(String name) {
+        int i = name.lastIndexOf('.');
+        return i > 0 ? name.substring(0, i) : name;
+    }
+
+    private static String titleFromName(String s) {
+        String[] parts = s.replace('_', ' ').replace('-', ' ').trim().split("\\s+");
+        StringBuilder out = new StringBuilder();
+        for (String p : parts) {
+            if (p.isEmpty()) continue;
+            if (out.length() > 0) out.append(' ');
+            if (p.length() == 1) out.append(p.toUpperCase(Locale.US));
+            else out.append(Character.toUpperCase(p.charAt(0))).append(p.substring(1));
+        }
+        return out.length() == 0 ? "Converted Song" : out.toString();
+    }
+
+    private static Object readJson(File f) throws Exception {
+        return new JSONTokener(readText(f)).nextValue();
+    }
+
+    private static JSONObject readObject(File f) throws Exception {
+        Object o = readJson(f);
+        if (!(o instanceof JSONObject)) throw new IllegalArgumentException("JSON inválido: " + f.getName());
+        return (JSONObject) o;
+    }
+
+    private static String readText(File f) throws Exception {
+        try (InputStream in = new BufferedInputStream(new FileInputStream(f));
+             ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            byte[] buf = new byte[64 * 1024];
+            int n;
+            while ((n = in.read(buf)) >= 0) out.write(buf, 0, n);
+            return out.toString(StandardCharsets.UTF_8.name());
+        }
+    }
+
+    private static void writeJson(File f, JSONObject obj) throws Exception {
+        writeText(f, obj.toString(2) + "\n");
+    }
+
+    private static void writeText(File f, String text) throws Exception {
+        mkdirs(f.getParentFile());
+        try (OutputStream out = new BufferedOutputStream(new FileOutputStream(f))) {
+            out.write(text.getBytes(StandardCharsets.UTF_8));
+        }
+    }
+
+    private static void copyFile(File src, File dst) throws Exception {
+        mkdirs(dst.getParentFile());
+        try (InputStream in = new BufferedInputStream(new FileInputStream(src));
+             OutputStream out = new BufferedOutputStream(new FileOutputStream(dst))) {
+            byte[] b = new byte[128 * 1024];
+            int n;
+            while ((n = in.read(b)) >= 0) out.write(b, 0, n);
+        }
+    }
+
+    private static File findFirstExisting(File dir, String... names) {
+        for (String n : names) {
+            File f = new File(dir, n);
+            if (f.isFile()) return f;
+        }
+        return null;
+    }
+
+    private static void extractZip(File zip, File dest) throws Exception {
+        String root = dest.getCanonicalPath() + File.separator;
+        try (ZipInputStream zin = new ZipInputStream(new BufferedInputStream(new FileInputStream(zip)))) {
+            ZipEntry e;
+            boolean any = false;
+            while ((e = zin.getNextEntry()) != null) {
+                any = true;
+                File out = new File(dest, e.getName());
+                String canon = out.getCanonicalPath();
+                if (!canon.startsWith(root)) throw new IllegalArgumentException("Pacote contém caminho inseguro: " + e.getName());
+                if (e.isDirectory()) {
+                    mkdirs(out);
+                } else {
+                    mkdirs(out.getParentFile());
+                    try (OutputStream os = new BufferedOutputStream(new FileOutputStream(out))) {
+                        byte[] buf = new byte[128 * 1024];
+                        int n;
+                        while ((n = zin.read(buf)) >= 0) os.write(buf, 0, n);
+                    }
+                }
+                zin.closeEntry();
+            }
+            if (!any) throw new IllegalArgumentException("O arquivo selecionado não é um pacote ZIP/FNMM válido.");
+        }
+    }
+
+    private static void zipDirectory(File sourceDir, File zipFile, String rootPrefix) throws Exception {
+        mkdirs(zipFile.getParentFile());
+        try (ZipOutputStream zout = new ZipOutputStream(new BufferedOutputStream(new FileOutputStream(zipFile)))) {
+            List<File> files = new ArrayList<>();
+            collectFiles(sourceDir, files);
+            Collections.sort(files, Comparator.comparing(File::getAbsolutePath));
+            String base = sourceDir.getCanonicalPath() + File.separator;
+            for (File f : files) {
+                String rel = f.getCanonicalPath().substring(base.length()).replace(File.separatorCha
