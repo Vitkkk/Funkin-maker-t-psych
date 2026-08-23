@@ -1,0 +1,155 @@
+   writeJson(new File(modDir, "VALIDATION_REPORT.json"), validation);
+
+        writeText(new File(modDir, "CONVERSION_REPORT.md"), buildReport(displaySong, fnmm.getName(), data,
+                chart, charAssets, stageAssets, voices != null));
+
+        notifyProgress(progress, 93, "Compactando mod pronto…");
+        File zip = new File(workRoot, modId + "_Psych_Android.zip");
+        if (zip.exists()) zip.delete();
+        zipDirectory(modDir, zip, modId + "/");
+
+        notifyProgress(progress, 100, "Pronto!");
+        ConversionResult result = new ConversionResult();
+        result.zipFile = zip;
+        result.suggestedName = modId + "_Psych_Android.zip";
+        result.notes = chart.noteCount;
+        result.sustains = chart.sustainCount;
+        result.eventActions = chart.eventActions;
+        result.characters = charAssets.size();
+        result.stageSprites = stageAssets.size();
+        return result;
+    }
+
+    private static class ChartResult {
+        JSONObject root;
+        JSONObject song;
+        int noteCount;
+        int sustainCount;
+        int eventBlocks;
+        int eventActions;
+    }
+
+    private ChartResult buildLegacyChart(JSONObject data, JSONArray blocks, Map<String, SpriteData> sprites,
+                                         Map<String, String> assetIds, int playerObject, int opponentObject,
+                                         String initialPlayerSprite, String initialOpponentSprite,
+                                         String displaySong, String songId, String stageId) throws Exception {
+        double bpm = nDouble(data.opt("bpm"), 100.0);
+        if (bpm <= 0) bpm = 100.0;
+        double sectionMs = (60.0 / bpm) * 1000.0 * 4.0;
+
+        JSONArray strumLines = data.optJSONArray("strumLines");
+        if (strumLines == null || strumLines.length() < 2) {
+            throw new IllegalArgumentException("data.json não possui as duas strumLines esperadas.");
+        }
+
+        List<NoteEntry> notes = new ArrayList<>();
+        int sustains = 0;
+        double maxMs = 0.0;
+        for (int side = 0; side < 2; side++) {
+            JSONArray lanes = strumLines.optJSONArray(side);
+            if (lanes == null) continue;
+            for (int lane = 0; lane < lanes.length(); lane++) {
+                JSONArray laneNotes = lanes.optJSONArray(lane);
+                if (laneNotes == null) continue;
+                for (int ni = 0; ni < laneNotes.length(); ni++) {
+                    JSONObject n = laneNotes.optJSONObject(ni);
+                    if (n == null) continue;
+                    NoteEntry e = new NoteEntry();
+                    e.timeMs = nDouble(n.opt("start"), 0) * 1000.0;
+                    e.durationMs = Math.max(0.0, nDouble(n.opt("duration"), 0) * 1000.0);
+                    e.lane = lane % 4;
+                    e.player = side == 0;
+                    notes.add(e);
+                    if (e.durationMs > 0.0000001) sustains++;
+                    maxMs = Math.max(maxMs, e.timeMs + e.durationMs);
+                }
+            }
+        }
+        Collections.sort(notes, Comparator.comparingDouble((NoteEntry n) -> n.timeMs).thenComparingInt(n -> n.lane));
+
+        for (int bi = 0; bi < blocks.length(); bi++) {
+            JSONObject block = blocks.optJSONObject(bi);
+            if (block != null) maxMs = Math.max(maxMs, nDouble(block.opt("time"), 0) * 1000.0);
+        }
+        int sectionCount = Math.max(1, (int) Math.ceil((maxMs + 1.0) / sectionMs));
+        int[] playerCounts = new int[sectionCount];
+        int[] opponentCounts = new int[sectionCount];
+        Boolean[] firstSide = new Boolean[sectionCount];
+        for (NoteEntry e : notes) {
+            int idx = clampSection((int) Math.floor(e.timeMs / sectionMs), sectionCount);
+            if (e.player) playerCounts[idx]++; else opponentCounts[idx]++;
+            if (firstSide[idx] == null) firstSide[idx] = e.player;
+        }
+
+        boolean[] mustHit = new boolean[sectionCount];
+        boolean lastPlayer = false;
+        for (int i = 0; i < sectionCount; i++) {
+            if (playerCounts[i] > 0 || opponentCounts[i] > 0) {
+                if (playerCounts[i] > opponentCounts[i]) lastPlayer = true;
+                else if (opponentCounts[i] > playerCounts[i]) lastPlayer = false;
+                else if (firstSide[i] != null) lastPlayer = firstSide[i];
+            }
+            mustHit[i] = lastPlayer;
+        }
+
+        JSONArray sections = new JSONArray();
+        for (int i = 0; i < sectionCount; i++) {
+            JSONObject sec = new JSONObject();
+            sec.put("sectionNotes", new JSONArray());
+            sec.put("sectionBeats", 4.0);
+            sec.put("mustHitSection", mustHit[i]);
+            sec.put("altAnim", false);
+            sec.put("gfSection", false);
+            sec.put("bpm", bpm);
+            sec.put("changeBPM", false);
+            sections.put(sec);
+        }
+
+        for (NoteEntry e : notes) {
+            int idx = clampSection((int) Math.floor(e.timeMs / sectionMs), sectionCount);
+            boolean sectionPlayer = mustHit[idx];
+            int noteData = e.lane + ((e.player == sectionPlayer) ? 0 : 4);
+            JSONArray row = new JSONArray();
+            row.put(e.timeMs);
+            row.put(noteData);
+            row.put(e.durationMs);
+            row.put("");
+            sections.getJSONObject(idx).getJSONArray("sectionNotes").put(row);
+        }
+
+        JSONArray psychEvents = new JSONArray();
+        int actionCount = 0;
+        for (int bi = 0; bi < blocks.length(); bi++) {
+            JSONObject block = blocks.optJSONObject(bi);
+            if (block == null) continue;
+            double timeMs = nDouble(block.opt("time"), 0) * 1000.0;
+            JSONArray actions = block.optJSONArray("actions");
+            if (actions == null) continue;
+            JSONArray converted = new JSONArray();
+            for (int ai = 0; ai < actions.length(); ai++) {
+                JSONObject a = actions.optJSONObject(ai);
+                if (a == null) continue;
+                actionCount++;
+                String type = a.optString("type", "Unknown");
+                JSONObject p = a.optJSONObject("props");
+                if (p == null) p = new JSONObject();
+                JSONArray ev = convertEvent(type, p, bpm, sprites, assetIds, playerObject, opponentObject);
+                if (ev != null) converted.put(ev);
+            }
+            if (converted.length() > 0) {
+                JSONArray blockOut = new JSONArray();
+                blockOut.put(timeMs);
+                blockOut.put(converted);
+                psychEvents.put(blockOut);
+            }
+        }
+
+        JSONObject song = new JSONObject();
+        song.put("song", displaySong);
+        song.put("notes", sections);
+        song.put("events", psychEvents);
+        song.put("bpm", bpm);
+        song.put("needsVoices", false);
+        song.put("speed", 1.0);
+        song.put("player1", "fmm-" + assetIds.get(initialPlayerSprite));
+        song.put("player2", "fm
