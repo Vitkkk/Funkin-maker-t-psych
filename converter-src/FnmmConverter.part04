@@ -1,0 +1,64 @@
+turn t\nend\n");
+        lua.append("local function easeName(s)\n  if s == 'cubic' then return 'cubeInOut' end\n  return 'linear'\nend\n");
+        lua.append("local function selectAutoCamera(isPlayer)\n  if not fmmAutoCamera then return end\n  local idx = isPlayer and 1 or 0\n  local c = cams[idx] or cams[0]\n  if c ~= nil then\n    setProperty('camFollow.x', c.x)\n    setProperty('camFollow.y', c.y)\n    setProperty('defaultCamZoom', c.zoom)\n  end\nend\n");
+        lua.append("function onCreate()\n");
+        lua.append("  -- Psych Android/0.7.x não possui StageData.objects; recriamos a cena em Lua.\n");
+
+        int frontThreshold = Math.max(playerObject, opponentObject);
+        for (int i = 0; i < objects.length(); i++) {
+            if (i == playerObject || i == opponentObject) continue;
+            JSONObject obj = objects.optJSONObject(i);
+            if (obj == null) continue;
+            String sprName = obj.optString("spr", "");
+            SpriteData sp = sprites.get(sprName);
+            if (sp == null || sp.entries.isEmpty()) continue;
+            SpriteEntryData first = sp.entries.get(0);
+            JSONObject pos = positionOf(obj);
+            JSONObject scale = scaleOf(obj);
+            boolean fixed = nBool(obj.opt("fixed"), false);
+            double sx = nDouble(scale.opt("x"), 1) * first.scale;
+            double sy = nDouble(scale.opt("y"), 1) * first.scale;
+            if (fixed) { sx *= CAMERA_ZOOM_FACTOR; sy *= CAMERA_ZOOM_FACTOR; }
+            String xExpr = fixed ? fmt(nDouble(pos.opt("x"), 0)) + " * screenWidth" : fmt(nDouble(pos.opt("x"), 0));
+            String yExpr = fixed ? fmt(nDouble(pos.opt("y"), 0)) + " * screenHeight" : fmt(nDouble(pos.opt("y"), 0));
+            String tag = "fmm_obj_" + i;
+            String path = modId + "/stage/" + assetIds.get(sprName);
+            lua.append("  makeAnimatedLuaSprite('").append(tag).append("', '").append(path).append("', ").append(xExpr).append(", ").append(yExpr).append(")\n");
+            lua.append("  addAnimationByPrefix('").append(tag).append("', 'anim0', 'anim0', ").append(effectiveFps(first)).append(", ").append(first.loop ? "true" : "false").append(")\n");
+            lua.append("  playAnim('").append(tag).append("', 'anim0', true)\n");
+            lua.append("  scaleObject('").append(tag).append("', ").append(fmt(sx)).append(", ").append(fmt(sy)).append(", false)\n");
+            lua.append("  setProperty('").append(tag).append(".offset.x', ").append(first.offsetX).append(")\n");
+            lua.append("  setProperty('").append(tag).append(".offset.y', ").append(first.offsetY).append(")\n");
+            lua.append("  setProperty('").append(tag).append(".alpha', ").append(fmt(nDouble(obj.opt("opacity"), 1))).append(")\n");
+            JSONObject color = obj.optJSONObject("color");
+            if (color != null) {
+                String hex = colorHex(color);
+                if (!"FFFFFF".equals(hex)) lua.append("  setProperty('").append(tag).append(".color', getColorFromHex('").append(hex).append("'))\n");
+            }
+            lua.append("  setProperty('").append(tag).append(".antialiasing', ").append(first.bilinear ? "true" : "false").append(")\n");
+            if (fixed) {
+                lua.append("  setProperty('").append(tag).append(".visible', ").append(nBool(obj.opt("visible"), true) ? "true" : "false").append(")\n");
+                lua.append("  setObjectCamera('").append(tag).append("', 'other')\n");
+                lua.append("  addLuaSprite('").append(tag).append("', true)\n");
+            } else {
+                boolean front = i > frontThreshold;
+                lua.append("  addLuaSprite('").append(tag).append("', ").append(front ? "true" : "false").append(")\n");
+            }
+        }
+        lua.append("end\n");
+        lua.append("function onCreatePost()\n");
+        for (int i = 0; i < objects.length(); i++) {
+            if (i == playerObject || i == opponentObject) continue;
+            JSONObject obj = objects.optJSONObject(i);
+            if (obj == null || nBool(obj.opt("fixed"), false)) continue;
+            String sprName = obj.optString("spr", "");
+            if (!sprites.containsKey(sprName)) continue;
+            lua.append("  setProperty('fmm_obj_").append(i).append(".visible', ").append(nBool(obj.opt("visible"), true) ? "true" : "false").append(")\n");
+        }
+        lua.append("  selectAutoCamera(false)\nend\n");
+        lua.append("function onMoveCamera(focus)\n  if focus == 'boyfriend' then selectAutoCamera(true) elseif focus == 'dad' then selectAutoCamera(false) end\nend\n");
+        lua.append("function goodNoteHit(id, dir, noteType, isSustainNote) selectAutoCamera(true) end\n");
+        lua.append("function opponentNoteHit(id, dir, noteType, isSustainNote) selectAutoCamera(false) end\n");
+        lua.append("function onTweenCompleted(tag)\n  if tag == 'fmmAutoCamY' and fmmReleaseAutoAfterTween then\n    fmmReleaseAutoAfterTween = false\n    fmmAutoCamera = true\n    triggerEvent('Camera Follow Pos', '', '')\n    if mustHitSection then selectAutoCamera(true) else selectAutoCamera(false) end\n  end\nend\n");
+        lua.append("function onEvent(name, value1, value2)\n  if name ~= 'FMM Runtime' then return end\n  local p = kv(value2)\n  local typ = value1\n");
+        lua.append("  if typ == 'CameraSet' then\n    local target = tonumber(p.target or '0') or 0\n    local mode = p.mode or 'auto'\n    local c = cams[target] or cams[0]\n    if mode == 'auto' then\n      local dur = tonumber(p.duration or '0') or 0\n      local ease = easeName(p.ease or 'default')\n      if c ~= nil and dur > 0 then\n        fmmAutoCamera = false\n        fmmReleaseAutoAfterTween = true\n        triggerEvent('Camera Follow Pos', tostring(getProperty('camFollow.x')), tostring(getProperty('camFollow.y')))\n        doTweenX('fmmAutoCamX', 'camFollow', c.x, dur, ease)\n        doTweenY('fmmAutoCamY', 'camFollow', c.y, dur, ease)\n        doTweenZoom('fmmAutoCamZoom', 'camGame', c.zoom, dur, ease)\n        setProperty('defaultCamZoom', c.zoom)\n      else\n        fmmAutoCamera = true\n        fmmReleaseAutoAfterTween = false\n        triggerEvent('Camera Follow Pos', '', '')\n        if mustHitSection then selectAutoCamera(true) else selectAutoCamera(false) end\n      end\n    else\n      fmmAutoCamera = false\n      fmmReleaseAutoAfterTween = false\n      if c ~= nil then\n        local dur = tonumber(p.duration or '0') or 0\n        local ease = easeName(p.ease or 'default')\n        if dur > 0 then\n          triggerEvent('Camera Follow Pos', tostring(getProperty('camFollow.x')), tostring(getProperty('camFollow.y')))\n          doTweenX('fmmCamX', 'camFollow', c.x, dur, ease)\n          doTweenY('fmmCamY', 'camFollow', c.y, dur, ease)\n          doTweenZoom('fmmCamZoom', 'camGame', c.zoom, dur, ease)\n        else\n          triggerEvent('Camera Follow Pos', tostring(c.x), tostring(c.y))\n          setProperty('camGame.zoom', c.zoom)\n        end\n        set
