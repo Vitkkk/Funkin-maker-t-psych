@@ -1,0 +1,145 @@
+ || atlasH > 8192) {
+            throw new IllegalArgumentException("Atlas de " + sprite.name + " ficou grande demais (" + atlasW + "x" + atlasH + ").");
+        }
+
+        Bitmap atlas;
+        try {
+            atlas = Bitmap.createBitmap(atlasW, atlasH, Bitmap.Config.ARGB_8888);
+        } catch (OutOfMemoryError oom) {
+            throw new IllegalArgumentException("Sem memória para montar o atlas de " + sprite.name + " (" + atlasW + "x" + atlasH + ").");
+        }
+        Canvas canvas = new Canvas(atlas);
+        Paint paint = new Paint();
+        paint.setFilterBitmap(false);
+        paint.setDither(false);
+
+        Map<Integer, List<Placement>> byEntry = new LinkedHashMap<>();
+        for (Placement p : placements) byEntry.computeIfAbsent(p.entry.index, k -> new ArrayList<>()).add(p);
+        for (List<Placement> group : byEntry.values()) {
+            SpriteEntryData e = group.get(0).entry;
+            Bitmap strip = BitmapFactory.decodeFile(e.png.getAbsolutePath());
+            if (strip == null) {
+                atlas.recycle();
+                throw new IllegalArgumentException("Não foi possível ler imagem: " + e.png.getName());
+            }
+            for (Placement p : group) {
+                Rect src = new Rect(p.frameIndex * e.frameW, 0, (p.frameIndex + 1) * e.frameW, e.frameH);
+                Rect dst = new Rect(p.x, p.y, p.x + p.w, p.y + p.h);
+                canvas.drawBitmap(strip, src, dst, paint);
+            }
+            strip.recycle();
+        }
+
+        mkdirs(destBase.getParentFile());
+        File png = new File(destBase.getAbsolutePath() + ".png");
+        try (OutputStream out = new BufferedOutputStream(new FileOutputStream(png))) {
+            if (!atlas.compress(Bitmap.CompressFormat.PNG, 100, out)) throw new IOException("Falha ao salvar atlas PNG.");
+        }
+        atlas.recycle();
+
+        StringBuilder xml = new StringBuilder();
+        xml.append("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n");
+        xml.append("<TextureAtlas imagePath=\"").append(xmlEscape(destBase.getName())).append(".png\">\n");
+        for (Placement p : placements) {
+            xml.append("  <SubTexture name=\"").append(xmlEscape(p.prefix)).append(String.format(Locale.US, "%04d", p.frameIndex))
+                    .append("\" x=\"").append(p.x).append("\" y=\"").append(p.y)
+                    .append("\" width=\"").append(p.w).append("\" height=\"").append(p.h).append("\" />\n");
+        }
+        xml.append("</TextureAtlas>\n");
+        writeText(new File(destBase.getAbsolutePath() + ".xml"), xml.toString());
+
+        AtlasInfo info = new AtlasInfo(); info.width = atlasW; info.height = atlasH; info.frames = placements.size();
+        return info;
+    }
+
+    private void buildIcon(SpriteData sprite, File dest) throws Exception {
+        List<Bitmap> states = new ArrayList<>();
+        int maxH = 0, totalW = 0;
+        for (int i = 0; i < Math.min(2, sprite.entries.size()); i++) {
+            SpriteEntryData e = sprite.entries.get(i);
+            if (e.png == null || !e.png.isFile()) continue;
+            Bitmap strip = BitmapFactory.decodeFile(e.png.getAbsolutePath());
+            if (strip == null) continue;
+            Bitmap frame = Bitmap.createBitmap(strip, 0, 0, e.frameW, e.frameH);
+            strip.recycle();
+            states.add(frame);
+            totalW += frame.getWidth();
+            maxH = Math.max(maxH, frame.getHeight());
+        }
+        if (states.isEmpty()) return;
+        if (states.size() == 1) {
+            Bitmap copy = states.get(0).copy(Bitmap.Config.ARGB_8888, false);
+            states.add(copy);
+            totalW += copy.getWidth();
+        }
+        Bitmap outBmp = Bitmap.createBitmap(totalW, maxH, Bitmap.Config.ARGB_8888);
+        Canvas c = new Canvas(outBmp);
+        int x = 0;
+        for (Bitmap b : states) {
+            c.drawBitmap(b, x, (maxH - b.getHeight()) / 2f, null);
+            x += b.getWidth();
+            b.recycle();
+        }
+        mkdirs(dest.getParentFile());
+        try (OutputStream out = new BufferedOutputStream(new FileOutputStream(dest))) {
+            outBmp.compress(Bitmap.CompressFormat.PNG, 100, out);
+        }
+        outBmp.recycle();
+    }
+
+    private static int[] dominantColor(File image) {
+        Bitmap b = BitmapFactory.decodeFile(image.getAbsolutePath());
+        if (b == null) return new int[]{161, 161, 161};
+        long r = 0, g = 0, bl = 0, count = 0;
+        int stepX = Math.max(1, b.getWidth() / 48);
+        int stepY = Math.max(1, b.getHeight() / 48);
+        for (int y = 0; y < b.getHeight(); y += stepY) {
+            for (int x = 0; x < b.getWidth(); x += stepX) {
+                int p = b.getPixel(x, y);
+                int a = (p >>> 24) & 255;
+                int pr = (p >>> 16) & 255, pg = (p >>> 8) & 255, pb = p & 255;
+                int max = Math.max(pr, Math.max(pg, pb));
+                int min = Math.min(pr, Math.min(pg, pb));
+                if (a > 40 && max - min > 10 && pr + pg + pb > 80) {
+                    r += pr; g += pg; bl += pb; count++;
+                }
+            }
+        }
+        b.recycle();
+        if (count == 0) return new int[]{161, 161, 161};
+        return new int[]{(int) Math.round(r / (double) count), (int) Math.round(g / (double) count), (int) Math.round(bl / (double) count)};
+    }
+
+    private Map<String, SpriteData> loadAllSprites(File extracted) throws Exception {
+        Map<String, SpriteData> result = new LinkedHashMap<>();
+        File spritesDir = new File(extracted, "sprites");
+        File[] dirs = spritesDir.listFiles(File::isDirectory);
+        if (dirs == null) return result;
+        List<File> sorted = new ArrayList<>();
+        Collections.addAll(sorted, dirs);
+        Collections.sort(sorted, Comparator.comparing(File::getName, String.CASE_INSENSITIVE_ORDER));
+        for (File dir : sorted) {
+            File json = new File(dir, "sprite.json");
+            if (!json.isFile()) continue;
+            result.put(dir.getName(), loadSprite(dir));
+        }
+        return result;
+    }
+
+    private SpriteData loadSprite(File folder) throws Exception {
+        JSONObject meta = readObject(new File(folder, "sprite.json"));
+        SpriteData s = new SpriteData();
+        s.name = folder.getName();
+        s.type = nInt(meta.opt("type"), 0);
+        JSONArray data = meta.optJSONArray("data");
+        if (data == null) return s;
+        for (int i = 0; i < data.length(); i++) {
+            JSONObject a = data.optJSONObject(i);
+            if (a == null) a = new JSONObject();
+            File png = new File(folder, i + ".png");
+            if (!png.isFile()) continue;
+            int num = Math.max(1, nInt(a.opt("num"), 1));
+            BitmapFactory.Options opts = new BitmapFactory.Options();
+            opts.inJustDecodeBounds = true;
+            BitmapFactory.decodeFile(png.getAbsolutePath(), opts);
+            if (opts.outWidth <= 0 || opts.outHeight <= 0) throw new IllegalArgumentException("PNG inválido: " + fol
