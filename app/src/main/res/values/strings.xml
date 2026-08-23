@@ -1,0 +1,8 @@
+<resources>
+    <string name="app_name">FMM → Psych</string>
+    <string name="subtitle">Converta mods do Funky Maker em mods prontos para a Psych Engine.</string>
+    <string name="pick_file">Escolher arquivo .FNMM / .FMM</string>
+    <string name="convert">CONVERTER MOD</string>
+    <string name="save_zip">SALVAR ZIP</string>
+    <string name="android_compat">Psych Android Compat</string>
+</resources>
