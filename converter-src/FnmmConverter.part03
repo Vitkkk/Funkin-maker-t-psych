@@ -1,0 +1,129 @@
+m-" + assetIds.get(initialOpponentSprite));
+        song.put("gfVersion", "gf");
+        song.put("stage", stageId);
+        song.put("arrowSkin", "");
+        song.put("splashSkin", "");
+        song.put("disableNoteRGB", false);
+
+        JSONObject root = new JSONObject();
+        root.put("song", song);
+
+        ChartResult r = new ChartResult();
+        r.root = root;
+        r.song = song;
+        r.noteCount = notes.size();
+        r.sustainCount = sustains;
+        r.eventBlocks = psychEvents.length();
+        r.eventActions = actionCount;
+        return r;
+    }
+
+    private JSONArray convertEvent(String type, JSONObject p, double bpm, Map<String, SpriteData> sprites,
+                                   Map<String, String> assetIds, int playerObject, int opponentObject) throws Exception {
+        if ("ObjectSpriteSet".equals(type)) {
+            int oid = nInt(p.opt("object"), -1);
+            String spr = p.optString("sprite", "");
+            if (oid == opponentObject && sprites.containsKey(spr)) return event("Change Character", "dad", "fmm-" + assetIds.get(spr));
+            if (oid == playerObject && sprites.containsKey(spr)) return event("Change Character", "bf", "fmm-" + assetIds.get(spr));
+            return event("FMM Runtime", type, "object=" + oid + "|sprite=" + assetIds.getOrDefault(spr, spr));
+        }
+        if ("CameraSet".equals(type)) {
+            int target = nInt(p.opt("target"), 0);
+            double duration = durationSeconds(p, "transitionTime", bpm);
+            String mode = p.optString("mode", "auto");
+            String ease = p.optString("easingType", "default");
+            return event("FMM Runtime", type, "target=" + target + "|duration=" + fmt(duration) + "|mode=" + mode + "|ease=" + ease);
+        }
+        if ("ObjectOpacitySet".equals(type)) {
+            return event("FMM Runtime", type, "object=" + nInt(p.opt("object"), 0) + "|value=" + fmt(nDouble(p.opt("value"), 1))
+                    + "|duration=" + fmt(durationSeconds(p, "transitionTime", bpm)));
+        }
+        if ("ObjectVisibilitySet".equals(type)) {
+            return event("FMM Runtime", type, "object=" + nInt(p.opt("object"), 0) + "|value=" + boolString(nBool(p.opt("value"), false)));
+        }
+        if ("ObjectBlendColor".equals(type)) {
+            return event("FMM Runtime", type, "object=" + nInt(p.opt("object"), 0) + "|color=" + rgbHex(p));
+        }
+        if ("ScreenFlash".equals(type)) {
+            return event("FMM Runtime", type, "color=" + rgbHex(p) + "|duration=" + fmt(durationSeconds(p, "duration", bpm))
+                    + "|alpha=" + fmt(nDouble(p.opt("alpha"), 1)));
+        }
+        if ("CameraShake".equals(type)) {
+            double duration = nDouble(p.opt("shakes"), 1) * nDouble(p.opt("delay"), 0.05);
+            double intensity = nDouble(p.opt("strength"), 0) / SOURCE_DESIGN_W;
+            return event("FMM Runtime", type, "duration=" + fmt(duration) + "|intensity=" + fmt(intensity));
+        }
+        if ("GUI".equals(type)) {
+            return event("FMM Runtime", type, "visible=" + boolString(nBool(p.opt("visible"), true)));
+        }
+        return event("FMM Runtime", type, "json=" + escapePipeValue(p.toString()));
+    }
+
+    private static JSONArray event(String name, String v1, String v2) {
+        JSONArray a = new JSONArray();
+        a.put(name);
+        a.put(v1 == null ? "" : v1);
+        a.put(v2 == null ? "" : v2);
+        return a;
+    }
+
+    private static int clampSection(int idx, int count) {
+        if (idx < 0) return 0;
+        if (idx >= count) return count - 1;
+        return idx;
+    }
+
+    private static double durationSeconds(JSONObject p, String key, double bpm) {
+        double d = nDouble(p.opt(key), 0.0);
+        String unit = p.optString(key + "Unit", p.optString("timeUnit", "seconds"));
+        if ("beats".equalsIgnoreCase(unit)) d *= 60.0 / bpm;
+        return d;
+    }
+
+    private JSONObject buildLegacyStageJson(JSONArray objects, JSONArray cameras, int playerObject, int opponentObject) throws Exception {
+        JSONObject defaultCam = cameras.length() > 0 && cameras.optJSONObject(0) != null ? cameras.getJSONObject(0) : new JSONObject();
+        JSONObject stage = new JSONObject();
+        stage.put("directory", "");
+        stage.put("defaultZoom", nDouble(defaultCam.opt("scale"), 1.0) * CAMERA_ZOOM_FACTOR);
+        stage.put("isPixelStage", false);
+        stage.put("stageUI", "normal");
+        stage.put("boyfriend", pointArray(positionOf(objects.getJSONObject(playerObject))));
+        JSONArray gf = new JSONArray(); gf.put(0); gf.put(0);
+        stage.put("girlfriend", gf);
+        stage.put("opponent", pointArray(positionOf(objects.getJSONObject(opponentObject))));
+        stage.put("hide_girlfriend", true);
+        stage.put("camera_boyfriend", zeroPoint());
+        stage.put("camera_opponent", zeroPoint());
+        stage.put("camera_girlfriend", zeroPoint());
+        stage.put("camera_speed", 1.0);
+        return stage;
+    }
+
+    private String buildLegacyStageLua(String sourceName, String modId, JSONArray objects, JSONArray cameras,
+                                       Map<String, SpriteData> sprites, Map<String, String> assetIds,
+                                       int playerObject, int opponentObject) throws Exception {
+        StringBuilder lua = new StringBuilder();
+        lua.append("-- Auto-generated from ").append(sourceName.replace("\n", " ")).append("; Android/legacy Psych compatibility build\n");
+        lua.append("local sourceWidth = 2160.0\n");
+        lua.append("local zoomFactor = ").append(fmt(CAMERA_ZOOM_FACTOR)).append("\n");
+        lua.append("local fmmAutoCamera = true\n");
+        lua.append("local fmmReleaseAutoAfterTween = false\n");
+        lua.append("local cams = {\n");
+        for (int i = 0; i < cameras.length(); i++) {
+            JSONObject c = cameras.optJSONObject(i);
+            if (c == null) continue;
+            JSONObject p = c.optJSONObject("position");
+            if (p == null) p = new JSONObject();
+            lua.append("  [").append(i).append("] = {x=").append(fmt(nDouble(p.opt("x"), 0)))
+                    .append(", y=").append(fmt(nDouble(p.opt("y"), 0)))
+                    .append(", zoom=").append(fmt(nDouble(c.opt("scale"), 1) * CAMERA_ZOOM_FACTOR)).append("},\n");
+        }
+        lua.append("}\n");
+        lua.append("local objectTags = {\n");
+        for (int i = 0; i < objects.length(); i++) {
+            String tag = i == opponentObject ? "dad" : (i == playerObject ? "boyfriend" : "fmm_obj_" + i);
+            lua.append("  [").append(i).append("] = '").append(tag).append("',\n");
+        }
+        lua.append("}\n");
+        lua.append("local function b(v) return v == 'true' or v == '1' end\n");
+        lua.append("local function kv(s)\n  local t = {}\n  if s == nil then return t end\n  for part in string.gmatch(s, '[^|]+') do\n    local k,v = string.match(part, '([^=]+)=(.*)')\n    if k ~= nil then t[k] = v end\n  end\n  re
