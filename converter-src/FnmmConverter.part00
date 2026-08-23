@@ -1,0 +1,184 @@
+package com.vitkkk.fmm2psych;
+
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.graphics.Canvas;
+import android.graphics.Paint;
+import android.graphics.Rect;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
+import org.json.JSONTokener;
+
+import java.io.BufferedInputStream;
+import java.io.BufferedOutputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
+import java.util.zip.ZipOutputStream;
+
+public class FnmmConverter {
+    private static final double SOURCE_DESIGN_W = 2160.0;
+    private static final double PSYCH_VIEW_W = 1280.0;
+    private static final double CAMERA_ZOOM_FACTOR = PSYCH_VIEW_W / SOURCE_DESIGN_W;
+    private static final double BASE_FPS = 24.0;
+    private static final int MAX_ATLAS_WIDTH = 4096;
+
+    public interface ProgressListener {
+        void onProgress(int percent, String message);
+    }
+
+    public static class ConversionResult {
+        public File zipFile;
+        public String suggestedName;
+        public int notes;
+        public int sustains;
+        public int eventActions;
+        public int characters;
+        public int stageSprites;
+    }
+
+    private static class SpriteEntryData {
+        int index;
+        File png;
+        int num;
+        int frameW;
+        int frameH;
+        double spd;
+        boolean spdFps;
+        double scale;
+        boolean bilinear;
+        boolean loop;
+        int offsetX;
+        int offsetY;
+    }
+
+    private static class SpriteData {
+        String name;
+        int type;
+        List<SpriteEntryData> entries = new ArrayList<>();
+    }
+
+    private static class Placement {
+        SpriteEntryData entry;
+        String prefix;
+        int frameIndex;
+        int x;
+        int y;
+        int w;
+        int h;
+    }
+
+    private static class AtlasInfo {
+        int width;
+        int height;
+        int frames;
+    }
+
+    private static class NoteEntry {
+        double timeMs;
+        double durationMs;
+        int lane;
+        boolean player;
+    }
+
+    public ConversionResult convert(File fnmm, File workRoot, ProgressListener progress) throws Exception {
+        notifyProgress(progress, 2, "Lendo o pacote .FNMM…");
+
+        File extracted = new File(workRoot, "fnmm_source");
+        File outputParent = new File(workRoot, "psych_output");
+        deleteRecursive(extracted);
+        deleteRecursive(outputParent);
+        if (!extracted.mkdirs() && !extracted.isDirectory()) throw new IOException("Falha ao criar pasta temporária.");
+        if (!outputParent.mkdirs() && !outputParent.isDirectory()) throw new IOException("Falha ao criar pasta de saída.");
+        extractZip(fnmm, extracted);
+
+        File dataFile = new File(extracted, "data.json");
+        File sceneFile = new File(extracted, "scene.json");
+        File eventsFile = new File(extracted, "events.json");
+        File musicFile = new File(extracted, "music.ogg");
+        if (!dataFile.isFile() || !sceneFile.isFile() || !eventsFile.isFile() || !musicFile.isFile()) {
+            throw new IllegalArgumentException("O arquivo não parece ser um export válido do Funky Maker: faltam data.json, scene.json, events.json ou music.ogg.");
+        }
+
+        JSONObject data = readObject(dataFile);
+        JSONObject scene = readObject(sceneFile);
+        Object eventRootObj = readJson(eventsFile);
+        JSONArray eventBlocks;
+        if (eventRootObj instanceof JSONObject) eventBlocks = ((JSONObject) eventRootObj).optJSONArray("events");
+        else if (eventRootObj instanceof JSONArray) eventBlocks = (JSONArray) eventRootObj;
+        else eventBlocks = null;
+        if (eventBlocks == null) eventBlocks = new JSONArray();
+
+        JSONArray objects = scene.optJSONArray("objects");
+        JSONArray cameras = scene.optJSONArray("cameras");
+        if (objects == null) objects = new JSONArray();
+        if (cameras == null) cameras = new JSONArray();
+
+        String baseName = stripExtension(fnmm.getName());
+        String modId = assetSlug(baseName);
+        String displaySong = titleFromName(baseName);
+        String songId = slug(displaySong);
+        String stageId = "fmm-" + songId;
+        File modDir = new File(outputParent, modId);
+        mkdirs(modDir);
+
+        notifyProgress(progress, 7, "Mapeando personagens e sprites…");
+        Map<String, SpriteData> sprites = loadAllSprites(extracted);
+        if (sprites.isEmpty()) throw new IllegalArgumentException("Nenhum sprite do Funky Maker foi encontrado.");
+        Map<String, String> assetIds = new LinkedHashMap<>();
+        for (String name : sprites.keySet()) assetIds.put(name, assetSlug(name));
+
+        int playerObject = -1;
+        int opponentObject = -1;
+        for (int i = 0; i < objects.length(); i++) {
+            JSONObject obj = objects.optJSONObject(i);
+            if (obj == null) continue;
+            int sl = nInt(obj.opt("strumLine"), -1);
+            if (sl == 0) playerObject = i;
+            else if (sl == 1) opponentObject = i;
+        }
+        if (playerObject < 0 || opponentObject < 0) {
+            throw new IllegalArgumentException("Não consegui identificar player e opponent pelo scene.json (strumLine 0/1).");
+        }
+
+        JSONObject playerObj = objects.getJSONObject(playerObject);
+        JSONObject opponentObj = objects.getJSONObject(opponentObject);
+        String initialPlayerSprite = playerObj.optString("spr", "");
+        String initialOpponentSprite = opponentObj.optString("spr", "");
+        if (!sprites.containsKey(initialPlayerSprite) || !sprites.containsKey(initialOpponentSprite)) {
+            throw new IllegalArgumentException("O sprite inicial do player ou opponent não existe dentro do pacote.");
+        }
+
+        Set<String> playerAssets = new LinkedHashSet<>();
+        Set<String> opponentAssets = new LinkedHashSet<>();
+        playerAssets.add(initialPlayerSprite);
+        opponentAssets.add(initialOpponentSprite);
+        for (int bi = 0; bi < eventBlocks.length(); bi++) {
+            JSONObject block = eventBlocks.optJSONObject(bi);
+            if (block == null) continue;
+            JSONArray actions = block.optJSONArray("actions");
+            if (actions == null) continue;
+            for (int ai = 0; ai < actions.length(); ai++) {
+                JSONObject action = actions.optJSONObject(ai);
+                if (action == null || !"ObjectSpriteSet".equals(act
