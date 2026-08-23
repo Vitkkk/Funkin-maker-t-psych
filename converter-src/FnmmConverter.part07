@@ -1,0 +1,144 @@
+der.getName() + "/" + i + ".png");
+            if (opts.outWidth % num != 0) {
+                throw new IllegalArgumentException(folder.getName() + "/" + i + ".png tem largura " + opts.outWidth + " que não divide em " + num + " frames.");
+            }
+            SpriteEntryData e = new SpriteEntryData();
+            e.index = i;
+            e.png = png;
+            e.num = num;
+            e.frameW = opts.outWidth / num;
+            e.frameH = opts.outHeight;
+            e.spd = nDouble(a.opt("spd"), 1.0);
+            e.spdFps = nBool(a.opt("spd_fps"), false);
+            e.scale = nDouble(a.opt("scale"), 1.0);
+            e.bilinear = nBool(a.opt("bilinear"), true);
+            e.loop = nBool(a.opt("loop"), true);
+            JSONObject off = a.optJSONObject("offset");
+            if (off != null) {
+                e.offsetX = nInt(off.opt("x"), 0);
+                e.offsetY = nInt(off.opt("y"), 0);
+            } else {
+                JSONArray oa = a.optJSONArray("offset");
+                if (oa != null && oa.length() >= 2) {
+                    e.offsetX = nInt(oa.opt(0), 0);
+                    e.offsetY = nInt(oa.opt(1), 0);
+                }
+            }
+            s.entries.add(e);
+        }
+        return s;
+    }
+
+    private void writePackAndWeek(File modDir, String displaySong, String songId,
+                                  String opponentChar, String playerChar, String weekIcon) throws Exception {
+        JSONObject pack = new JSONObject();
+        pack.put("name", displaySong + " - FNMM Conversion");
+        pack.put("description", "Converted from Funky Maker Mobile; Android / legacy Psych-compatible chart and Lua stage.");
+        pack.put("restart", false);
+        pack.put("runsGlobally", false);
+        writeJson(new File(modDir, "pack.json"), pack);
+
+        JSONObject week = new JSONObject();
+        JSONArray songs = new JSONArray();
+        JSONArray songEntry = new JSONArray();
+        songEntry.put(displaySong);
+        songEntry.put(weekIcon);
+        JSONArray rgb = new JSONArray(); rgb.put(113); rgb.put(124); rgb.put(134);
+        songEntry.put(rgb);
+        songs.put(songEntry);
+        week.put("songs", songs);
+        JSONArray chars = new JSONArray(); chars.put(opponentChar); chars.put(playerChar); chars.put("gf");
+        week.put("weekCharacters", chars);
+        week.put("weekBackground", "stage");
+        week.put("weekBefore", "");
+        week.put("storyName", displaySong);
+        week.put("weekName", displaySong + " (FNMM Conversion)");
+        week.put("startUnlocked", true);
+        week.put("hiddenUntilUnlocked", false);
+        week.put("hideStoryMode", false);
+        week.put("hideFreeplay", false);
+        week.put("difficulties", "");
+        writeJson(new File(modDir, "weeks/" + songId + ".json"), week);
+        writeText(new File(modDir, "weeks/weekList.txt"), songId + "\n");
+    }
+
+    private String buildReport(String displaySong, String sourceName, JSONObject data, ChartResult chart,
+                               Set<String> charAssets, Set<String> stageAssets, boolean hasVoices) {
+        StringBuilder r = new StringBuilder();
+        r.append("# CONVERSION REPORT — ").append(displaySong).append("\n\n");
+        r.append("- Fonte: `").append(sourceName).append("`\n");
+        r.append("- Engine original: Funky Maker Mobile / FNMM export v").append(String.valueOf(data.opt("version"))).append("\n");
+        r.append("- Destino: Psych Engine Android / legacy chart format (0.7.x-compatible; também aceito pelas builds 1.x)\n");
+        r.append("- BPM: ").append(fmt(nDouble(data.opt("bpm"), 100))).append("\n");
+        r.append("- Notas: ").append(chart.noteCount).append("\n");
+        r.append("- Sustains: ").append(chart.sustainCount).append("\n");
+        r.append("- Blocos de eventos: ").append(chart.eventBlocks).append("\n");
+        r.append("- Ações de evento: ").append(chart.eventActions).append("\n");
+        r.append("- Personagens convertidos: ").append(charAssets.size()).append("\n");
+        r.append("- Sprites de cenário convertidos: ").append(stageAssets.size()).append("\n");
+        r.append("- Áudio: `music.ogg` copiado para `Inst.ogg` sem recompressão.\n");
+        r.append("- Voices separado: ").append(hasVoices ? "sim" : "não").append("\n\n");
+        r.append("## Compatibilidade Android\n\n");
+        r.append("O chart é gerado dentro de `{\"song\": {...}}`, sem o campo `format`, e as lanes são remapeadas conforme `mustHitSection`, evitando o erro `Invalid field: gfVersion` visto em forks Android com parser antigo.\n\n");
+        r.append("O cenário é recriado em Lua em vez de depender de `StageData.objects`, recurso ausente em várias builds 0.7.x para Android.\n\n");
+        r.append("## Animações\n\n");
+        r.append("Quando `spd_fps=false`, o Funky Maker guarda um multiplicador de velocidade. O conversor usa 24 FPS × `spd`, igual ao conversor validado anteriormente.\n");
+        return r.toString();
+    }
+
+    private static JSONObject positionOf(JSONObject obj) {
+        JSONObject tr = transform0(obj);
+        JSONObject p = tr.optJSONObject("position");
+        return p != null ? p : new JSONObject();
+    }
+
+    private static JSONObject scaleOf(JSONObject obj) {
+        JSONObject tr = transform0(obj);
+        JSONObject s = tr.optJSONObject("scale");
+        return s != null ? s : new JSONObject();
+    }
+
+    private static JSONObject transform0(JSONObject obj) {
+        JSONArray tr = obj.optJSONArray("transform");
+        if (tr != null && tr.length() > 0 && tr.optJSONObject(0) != null) return tr.optJSONObject(0);
+        JSONObject direct = obj.optJSONObject("transform");
+        return direct != null ? direct : new JSONObject();
+    }
+
+    private static JSONArray pointArray(JSONObject p) {
+        JSONArray a = new JSONArray();
+        a.put(nDouble(p.opt("x"), 0));
+        a.put(nDouble(p.opt("y"), 0));
+        return a;
+    }
+
+    private static JSONArray zeroPoint() {
+        JSONArray a = new JSONArray(); a.put(0); a.put(0); return a;
+    }
+
+    private static int effectiveFps(SpriteEntryData e) {
+        double fps = e.spdFps ? e.spd : BASE_FPS * e.spd;
+        return Math.max(1, (int) Math.round(fps));
+    }
+
+    private static String characterSlotName(int index) {
+        switch (index) {
+            case 0: return "idle";
+            case 1: return "singLEFT";
+            case 2: return "singDOWN";
+            case 3: return "singUP";
+            case 4: return "singRIGHT";
+            case 5: return "miss";
+            default: return "extra" + index;
+        }
+    }
+
+    private static String rgbHex(JSONObject p) {
+        int r = clamp255(nInt(p.opt("color_r"), 255));
+        int g = clamp255(nInt(p.opt("color_g"), 255));
+        int b = clamp255(nInt(p.opt("color_b"), 255));
+        return String.format(Locale.US, "%02X%02X%02X", r, g, b);
+    }
+
+    private static String colorHex(JSONObject color) {
+        int r = clamp255(nInt(color.opt("r"), 
