@@ -1,0 +1,47 @@
+r, '/');
+                ZipEntry e = new ZipEntry(rootPrefix + rel);
+                e.setTime(f.lastModified());
+                zout.putNextEntry(e);
+                try (InputStream in = new BufferedInputStream(new FileInputStream(f))) {
+                    byte[] buf = new byte[128 * 1024];
+                    int n;
+                    while ((n = in.read(buf)) >= 0) zout.write(buf, 0, n);
+                }
+                zout.closeEntry();
+            }
+        }
+    }
+
+    private static void collectFiles(File dir, List<File> out) {
+        File[] list = dir.listFiles();
+        if (list == null) return;
+        for (File f : list) {
+            if (f.isDirectory()) collectFiles(f, out);
+            else if (f.isFile()) out.add(f);
+        }
+    }
+
+    private static void deleteRecursive(File f) {
+        if (f == null || !f.exists()) return;
+        if (f.isDirectory()) {
+            File[] children = f.listFiles();
+            if (children != null) for (File c : children) deleteRecursive(c);
+        }
+        //noinspection ResultOfMethodCallIgnored
+        f.delete();
+    }
+
+    private static void mkdirs(File f) throws IOException {
+        if (f == null) return;
+        if (!f.exists() && !f.mkdirs() && !f.isDirectory()) throw new IOException("Não foi possível criar: " + f.getAbsolutePath());
+    }
+
+    private static void notifyProgress(ProgressListener l, int p, String m) {
+        if (l != null) l.onProgress(Math.max(0, Math.min(100, p)), m);
+    }
+
+    private static String xmlEscape(String s) {
+        if (s == null) return "";
+        return s.replace("&", "&amp;").replace("\"", "&quot;").replace("<", "&lt;").replace(">", "&gt;");
+    }
+}
