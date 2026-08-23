@@ -105,7 +105,7 @@ der.getName() + "/" + i + ".png");
         return direct != null ? direct : new JSONObject();
     }
 
-    private static JSONArray pointArray(JSONObject p) {
+    private static JSONArray pointArray(JSONObject p) throws Exception {
         JSONArray a = new JSONArray();
         a.put(nDouble(p.opt("x"), 0));
         a.put(nDouble(p.opt("y"), 0));
