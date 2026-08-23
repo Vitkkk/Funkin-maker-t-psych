@@ -1,0 +1,114 @@
+Property('defaultCamZoom', c.zoom)\n      end\n    end\n");
+        lua.append("  elseif typ == 'ObjectVisibilitySet' then\n    local tag = objectTags[tonumber(p.object or '-1')]\n    if tag ~= nil then setProperty(tag..'.visible', b(p.value)) end\n");
+        lua.append("  elseif typ == 'ObjectOpacitySet' then\n    local tag = objectTags[tonumber(p.object or '-1')]\n    if tag ~= nil then\n      local v=tonumber(p.value or '1') or 1; local d=tonumber(p.duration or '0') or 0\n      if d > 0 then doTweenAlpha('fmmAlpha'..p.object, tag, v, d, 'linear') else setProperty(tag..'.alpha',v) end\n    end\n");
+        lua.append("  elseif typ == 'ObjectBlendColor' then\n    local tag = objectTags[tonumber(p.object or '-1')]\n    if tag ~= nil then setProperty(tag..'.color', getColorFromHex(p.color or 'FFFFFF')) end\n");
+        lua.append("  elseif typ == 'ScreenFlash' then\n    cameraFlash('other', p.color or 'FFFFFF', tonumber(p.duration or '0.3') or 0.3, true)\n");
+        lua.append("  elseif typ == 'CameraShake' then\n    cameraShake('game', tonumber(p.intensity or '0.02') or 0.02, tonumber(p.duration or '0.5') or 0.5)\n");
+        lua.append("  elseif typ == 'GUI' then\n    setProperty('camHUD.visible', b(p.visible))\n");
+        lua.append("  end\nend\n");
+        return lua.toString();
+    }
+
+    private void convertCharacter(SpriteData sprite, String sourceName, String assetId, boolean isPlayer,
+                                  JSONObject sceneObject, boolean hasRoleIcon, String roleIcon,
+                                  File modDir) throws Exception {
+        List<String> prefixes = new ArrayList<>();
+        for (SpriteEntryData e : sprite.entries) prefixes.add(characterSlotName(e.index));
+        File atlasBase = new File(modDir, "images/characters/fmm-" + assetId);
+        makeAtlas(sprite, atlasBase, prefixes);
+
+        if (sprite.entries.isEmpty()) throw new IllegalArgumentException("Personagem sem animações: " + sourceName);
+        SpriteEntryData base = sprite.entries.get(0);
+        JSONObject objScale = scaleOf(sceneObject);
+        double objectScaleX = nDouble(objScale.opt("x"), 1.0);
+        double baseScale = objectScaleX * base.scale;
+
+        JSONArray animations = new JSONArray();
+        for (SpriteEntryData e : sprite.entries) {
+            String semantic = characterSlotName(e.index);
+            if (e.index == 5) {
+                String[] misses = {"singLEFTmiss", "singDOWNmiss", "singUPmiss", "singRIGHTmiss"};
+                for (String miss : misses) animations.put(characterAnimation(miss, "miss", effectiveFps(e), false, e.offsetX, e.offsetY));
+            } else {
+                animations.put(characterAnimation(semantic, semantic, effectiveFps(e), e.loop, e.offsetX, e.offsetY));
+            }
+        }
+
+        int[] health = hasRoleIcon ? dominantColor(new File(modDir, "images/icons/" + roleIcon + ".png")) : new int[]{161, 161, 161};
+        JSONObject cj = new JSONObject();
+        cj.put("animations", animations);
+        cj.put("image", "characters/fmm-" + assetId);
+        cj.put("scale", baseScale);
+        cj.put("sing_duration", 4.0);
+        cj.put("healthicon", hasRoleIcon ? roleIcon : "face");
+        cj.put("position", zeroPoint());
+        cj.put("camera_position", zeroPoint());
+        cj.put("flip_x", isPlayer);
+        cj.put("no_antialiasing", !base.bilinear);
+        JSONArray colors = new JSONArray(); colors.put(health[0]); colors.put(health[1]); colors.put(health[2]);
+        cj.put("healthbar_colors", colors);
+        writeJson(new File(modDir, "characters/fmm-" + assetId + ".json"), cj);
+
+        Map<String, Double> ratios = new LinkedHashMap<>();
+        double bscale = Math.abs(base.scale) < 0.000001 ? 1.0 : base.scale;
+        for (SpriteEntryData e : sprite.entries) {
+            if (e.index == 5) continue;
+            double ratio = e.scale / bscale;
+            if (Math.abs(ratio - 1.0) > 0.000001) ratios.put(characterSlotName(e.index), ratio);
+        }
+        if (!ratios.isEmpty()) {
+            String charId = "fmm-" + assetId;
+            StringBuilder lua = new StringBuilder();
+            lua.append("local myChar = '").append(charId).append("'\n");
+            lua.append("local baseScale = ").append(fmt(baseScale)).append("\n");
+            lua.append("local ratios = {\n");
+            for (Map.Entry<String, Double> e : ratios.entrySet()) lua.append("  ['").append(e.getKey()).append("'] = ").append(fmt(e.getValue())).append(",\n");
+            lua.append("}\n");
+            lua.append("local function applyTo(tag)\n");
+            lua.append("  if getProperty(tag..'.curCharacter') ~= myChar then return end\n");
+            lua.append("  local a = getProperty(tag..'.animation.curAnim.name')\n");
+            lua.append("  local r = ratios[a] or 1\n  local s = baseScale * r\n");
+            lua.append("  if math.abs(getProperty(tag..'.scale.x') - s) > 0.0001 then\n");
+            lua.append("    setProperty(tag..'.scale.x', s)\n    setProperty(tag..'.scale.y', s)\n  end\nend\n");
+            lua.append("function onUpdatePost()\n  applyTo('dad')\n  applyTo('boyfriend')\n  applyTo('gf')\nend\n");
+            writeText(new File(modDir, "characters/fmm-" + assetId + ".lua"), lua.toString());
+        }
+    }
+
+    private static JSONObject characterAnimation(String anim, String name, int fps, boolean loop, int offX, int offY) throws Exception {
+        JSONObject a = new JSONObject();
+        a.put("anim", anim);
+        a.put("name", name);
+        a.put("fps", fps);
+        a.put("loop", loop);
+        a.put("indices", new JSONArray());
+        JSONArray off = new JSONArray(); off.put(offX); off.put(offY);
+        a.put("offsets", off);
+        return a;
+    }
+
+    private AtlasInfo makeAtlas(SpriteData sprite, File destBase, List<String> prefixes) throws Exception {
+        List<Placement> placements = new ArrayList<>();
+        int x = 0, y = 0, rowH = 0, atlasW = 0;
+        int maxWidth = MAX_ATLAS_WIDTH;
+        for (SpriteEntryData e : sprite.entries) {
+            if (e.png == null || !e.png.isFile()) continue;
+            String prefix = e.index < prefixes.size() ? prefixes.get(e.index) : "anim" + e.index;
+            if (e.frameW > maxWidth) maxWidth = e.frameW;
+            for (int fi = 0; fi < e.num; fi++) {
+                if (x > 0 && x + e.frameW > maxWidth) {
+                    y += rowH;
+                    x = 0;
+                    rowH = 0;
+                }
+                Placement p = new Placement();
+                p.entry = e; p.prefix = prefix; p.frameIndex = fi; p.x = x; p.y = y; p.w = e.frameW; p.h = e.frameH;
+                placements.add(p);
+                x += e.frameW;
+                rowH = Math.max(rowH, e.frameH);
+                atlasW = Math.max(atlasW, x);
+            }
+        }
+        int atlasH = y + rowH;
+        if (placements.isEmpty() || atlasW <= 0 || atlasH <= 0) throw new IllegalArgumentException("Sprite sem frames: " + sprite.name);
+        if (atlasW > 8192
