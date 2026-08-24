@@ -60,8 +60,22 @@
             if (e.png == null || !e.png.isFile()) continue;
             Bitmap strip = BitmapFactory.decodeFile(e.png.getAbsolutePath());
             if (strip == null) continue;
-            Bitmap frame = Bitmap.createBitmap(strip, 0, 0, e.frameW, e.frameH);
+
+            // Always render into a new bitmap. Bitmap.createBitmap(source, 0, 0,
+            // sourceWidth, sourceHeight) is allowed to return the original source
+            // object when the requested crop is the whole image. Recycling `strip`
+            // would then also recycle `frame`, causing "Canvas: trying to use a
+            // recycled bitmap" on single-frame icon states.
+            Bitmap frame = Bitmap.createBitmap(e.frameW, e.frameH, Bitmap.Config.ARGB_8888);
+            Canvas frameCanvas = new Canvas(frame);
+            Paint framePaint = new Paint();
+            framePaint.setFilterBitmap(false);
+            framePaint.setDither(false);
+            Rect src = new Rect(0, 0, e.frameW, e.frameH);
+            Rect dst = new Rect(0, 0, e.frameW, e.frameH);
+            frameCanvas.drawBitmap(strip, src, dst, framePaint);
             strip.recycle();
+
             states.add(frame);
             totalW += frame.getWidth();
             maxH = Math.max(maxH, frame.getHeight());
